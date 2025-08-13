@@ -8,7 +8,7 @@ date: "2025-07-25"
 ```{r}
 rm(list = ls())
 
-set.seed(42)
+set.seed(1996)
 library(tidyr)
 library(dplyr)
 ```
@@ -17,15 +17,15 @@ library(dplyr)
 
 TODO:
 - figure out why this is so computationally intensive once we increase n_consumers and n_merchants
-- decide if we are happy with the distribution of vplusm and vcm
+- decide if we are happy with the distribution of merchant_pop and vcm
 
 ```{r}
 n_consumers <- 100
 n_merchants  <- 20
 max_vcm <- 3
 
-# Assign distribution of vplusm
-vplusm <- c(
+# Assign distribution of v plus m
+vplusm_dn <- c(
   rep(1, round(0.90 * n_merchants)),
   rep(2, round(0.05 * n_merchants)),
   rep(5, round(0.03 * n_merchants)),
@@ -33,12 +33,12 @@ vplusm <- c(
 )
 
 # Shuffle
-vplusm <- sample(vplusm)
+vplusm_dn <- sample(vplusm_dn)
 
 # Create merchant df
-merchant_df <- data.frame(
+merchant_prelim <- data.frame(
   merchant_ID = 1:n_merchants,
-  vplusm = vplusm
+  vplusm_dn = vplusm_dn
 )
 
 # Create empty vcm table
@@ -46,25 +46,25 @@ vcm <- matrix(0, nrow = n_consumers, ncol = n_merchants)
 
 # Assign visits fulfilling target totals
 for (m in 1:n_merchants) {
-  target_vplusm <- merchant_df$vplusm[m]
+  target_merchant_vplusm <- merchant_prelim$vplusm_dn[m]
   
   # Randomly choose consumers for these visits:
-  # min is 1, max is target_vplusm, capped at n_consumers
-  n_chosen <- sample(1:min(target_vplusm, n_consumers), 1)
+  # min is 1, max is target_merchant_vplusm, capped at n_consumers
+  n_chosen <- sample(1:min(target_merchant_vplusm, n_consumers), 1)
   consumers <- sample(1:n_consumers, n_chosen, replace = FALSE)
   
-  # Allocate exactly target_vplusm visits across chosen consumers, 
-  # each value in 0:max_vcm (but sum must equal target_vplusm)
+  # Allocate exactly target_merchant_vplusm visits across chosen consumers, 
+  # each value in 0:max_vcm (but sum must equal target_merchant_vplusm)
   repeat {
     visits <- sample(0:max_vcm, n_chosen, replace = TRUE)
-    if (sum(visits) == target_vplusm) break
+    if (sum(visits) == target_merchant_vplusm) break
   }
   
   vcm[consumers, m] <- visits
   # # Sanity check
-  # cat("Merchant", m, "- target_vplusm:", target_vplusm,
+  # cat("Merchant", m, "- target_merchant_vplusm:", target_merchant_vplusm,
   #     " Sum allocated:", sum(vcm[consumers, m]),
-  #     ifelse(sum(vcm[consumers, m]) == target_vplusm, "✔", "✘"), "\n")
+  #     ifelse(sum(vcm[consumers, m]) == target_merchant_vplusm, "✔", "✘"), "\n")
 }
 
 vcm <- as.data.frame(vcm) %>%
@@ -77,9 +77,15 @@ vcm <- as.data.frame(vcm) %>%
   ) %>%
   mutate(merchant_ID = as.integer(merchant_ID))
 
-vplusm <- vcm %>% 
+merchant_pop <- vcm %>% 
   group_by(merchant_ID) %>% 
   summarise(vplusm = sum(vcm_value))
+
+# Add y: 95% of values = 1, 5% = 0
+n <- nrow(merchant_pop)
+y <- c(rep(1, round(0.95 * n)), rep(0, n - round(0.95 * n)))
+y <- sample(y)  # shuffle so zeros are randomly placed
+merchant_pop$y <- y
 ```
 
 # Create inclusion probablities for the consumers
@@ -88,21 +94,92 @@ TODO:
 - decide on how to generate the inclusion probabilities of the consumers
 ```{r}
 # Generate inclusion probabilities - these are currently sampled from a uniform distribution
-pi_c_min <- 0.4
-pi_c_max <- 0.5
+pi_c_min <- 0.8
+pi_c_max <- 0.85
 pi_c <- runif(n_consumers, min=pi_c_min, max=pi_c_max)  
 wc <- 1/pi_c
 
+# Create consumer df
+consumer_pop <- data.frame(
+  consumer_ID = 1:n_consumers,
+  pi_c = pi_c,
+  wc = wc
+)
+```
+
+# Get population average y - value
+```{r}
+mu <- sum(merchant_pop$y)/n_merchants
+theta <- sum(merchant_pop$y)
+
+
+```
+
+# Get GWSM estimate
+
+## Draw consumer sample
+```{r}
 # Draw poisson sample (get consumer indices)
 c_sample_idx <- rbinom(n_consumers, size=1, prob=pi_c)
 
 # Get corresponding ids
 sampled_consumers <- which(c_sample_idx == 1)
 
-cat("Number sampled:", length(sampled_consumers), "\n")
+# cat("Number sampled:", length(sampled_consumers), "\n")
 
-vcm %>%
-  filter(consumer_ID %in% sampled_consumers) %>% 
-  filter(vcm_value>0)
+# Get sampled merchants
+sampled_merchants <- vcm %>% 
+  filter(consumer_ID %in% sampled_consumers,
+         vcm_value > 0) %>% 
+  pull(merchant_ID)
+
+# Calculate the gwsm weights
+gwsm_wgt <- vcm %>% 
+  filter(consumer_ID %in% sampled_consumers,
+         vcm_value > 0) %>% 
+  merge(merchant_pop,
+        by = "merchant_ID",
+        all.x = TRUE) %>% 
+  merge(consumer_pop,
+        by = "consumer_ID",
+        all.x = TRUE) %>% 
+  arrange(merchant_ID) %>% 
+  mutate(p.s = wc* vcm_value / vplusm) %>% 
+  group_by(merchant_ID) %>% 
+  summarise(gwsm_wgt = sum(p.s))
+
+# Get components making up the estimate of muhat
+muhat_comp <- gwsm_wgt %>% 
+  merge(merchant_pop,
+        by = "merchant_ID",
+        all.x = TRUE) %>% 
+  mutate(p.s.n = gwsm_wgt * y) %>% 
+  mutate(p.s.d = gwsm_wgt)
+
+muhat <- sum(muhat_comp$p.s.n) / sum(muhat_comp$p.s.d)
+thetahat <- sum(muhat_comp$p.s.n)
+cat("muhat:", muhat, "\n")
+cat("thetahat:", thetahat, "\n")
 
 ```
+
+# Check that muhat and thetahat are unbiased
+
+```{r}
+cat("mu:", mu, "\n")
+cat("theta:", theta, "\n")
+
+cat("muhat:", muhat, "\n")
+cat("thetahat:", thetahat, "\n")
+```
+
+### Method 1: E(weight matrix) == 1 (Lavallee and Deville Paper)
+
+
+```{r}
+# Do the total first
+# E(theta) = E()  
+```
+
+THESE ARE EQUIVALENT
+### Method 2: E(thetahat) = thetahat
