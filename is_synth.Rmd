@@ -1,0 +1,108 @@
+---
+title: "is_synth"
+output: html_document
+date: "2025-07-25"
+---
+
+# Set up
+```{r}
+rm(list = ls())
+
+set.seed(42)
+library(tidyr)
+library(dplyr)
+```
+
+# Generate population
+
+TODO:
+- figure out why this is so computationally intensive once we increase n_consumers and n_merchants
+- decide if we are happy with the distribution of vplusm and vcm
+
+```{r}
+n_consumers <- 100
+n_merchants  <- 20
+max_vcm <- 3
+
+# Assign distribution of vplusm
+vplusm <- c(
+  rep(1, round(0.90 * n_merchants)),
+  rep(2, round(0.05 * n_merchants)),
+  rep(5, round(0.03 * n_merchants)),
+  rep(10, round(0.02 * n_merchants))
+)
+
+# Shuffle
+vplusm <- sample(vplusm)
+
+# Create merchant df
+merchant_df <- data.frame(
+  merchant_ID = 1:n_merchants,
+  vplusm = vplusm
+)
+
+# Create empty vcm table
+vcm <- matrix(0, nrow = n_consumers, ncol = n_merchants)
+
+# Assign visits fulfilling target totals
+for (m in 1:n_merchants) {
+  target_vplusm <- merchant_df$vplusm[m]
+  
+  # Randomly choose consumers for these visits:
+  # min is 1, max is target_vplusm, capped at n_consumers
+  n_chosen <- sample(1:min(target_vplusm, n_consumers), 1)
+  consumers <- sample(1:n_consumers, n_chosen, replace = FALSE)
+  
+  # Allocate exactly target_vplusm visits across chosen consumers, 
+  # each value in 0:max_vcm (but sum must equal target_vplusm)
+  repeat {
+    visits <- sample(0:max_vcm, n_chosen, replace = TRUE)
+    if (sum(visits) == target_vplusm) break
+  }
+  
+  vcm[consumers, m] <- visits
+  # # Sanity check
+  # cat("Merchant", m, "- target_vplusm:", target_vplusm,
+  #     " Sum allocated:", sum(vcm[consumers, m]),
+  #     ifelse(sum(vcm[consumers, m]) == target_vplusm, "✔", "✘"), "\n")
+}
+
+vcm <- as.data.frame(vcm) %>%
+  mutate(consumer_ID = 1:n_consumers) %>%
+  pivot_longer(
+    cols = starts_with("V"),   # the default column names for data.frame from matrix
+    names_to = "merchant_ID",
+    names_prefix = "V",
+    values_to = "vcm_value"
+  ) %>%
+  mutate(merchant_ID = as.integer(merchant_ID))
+
+vplusm <- vcm %>% 
+  group_by(merchant_ID) %>% 
+  summarise(vplusm = sum(vcm_value))
+```
+
+# Create inclusion probablities for the consumers
+
+TODO:
+- decide on how to generate the inclusion probabilities of the consumers
+```{r}
+# Generate inclusion probabilities - these are currently sampled from a uniform distribution
+pi_c_min <- 0.4
+pi_c_max <- 0.5
+pi_c <- runif(n_consumers, min=pi_c_min, max=pi_c_max)  
+wc <- 1/pi_c
+
+# Draw poisson sample (get consumer indices)
+c_sample_idx <- rbinom(n_consumers, size=1, prob=pi_c)
+
+# Get corresponding ids
+sampled_consumers <- which(c_sample_idx == 1)
+
+cat("Number sampled:", length(sampled_consumers), "\n")
+
+vcm %>%
+  filter(consumer_ID %in% sampled_consumers) %>% 
+  filter(vcm_value>0)
+
+```
