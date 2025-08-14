@@ -1,15 +1,27 @@
+#-------------------------------------------------------------------------------
+# TODO:
+# - switch from simple random sampling to Poisson sampling
+# - implement and assess different scenarios based on section 6 
+# (optimal standardized link matrices depends on sampling)
+# - make sample sizes consistent with actual data
+# - is there a way to show consistency? i.e. show that the var goes to 0?
+# ------------------------------------------------------------------------------
+
 # GWSM Unbiasedness Simulation in R
 # Based on Deville & Lavallée (2006) - Property 3.1
 # Demonstrates that the Generalized Weight Share Method produces unbiased estimates
+rm(list = ls())
 
 # Load required libraries
-set.seed(42)
+set.seed(2025)
+library(Matrix)
+library(ggplot2)
 
 # Simulation parameters
 n_simulations <- 1000
-N_A <- 100  # Population size for frame population U_A
-N_B <- 150  # Population size for target population U_B
-n_A <- 30   # Sample size from U_A
+N_A <- 3200  # Population size for frame population U_A
+N_B <- 2400  # Population size for target population U_B
+n_A <- 800   # Sample size from U_A
 
 cat("GWSM Unbiasedness Simulation\n")
 cat("============================\n")
@@ -19,33 +31,44 @@ cat("Number of simulations:", n_simulations, "\n\n")
 
 # Step 1: Create link matrix Theta_AB
 # Each unit in U_A can be linked to 1-3 units in U_B
-Theta_AB <- matrix(0, nrow = N_A, ncol = N_B)
+Theta_AB <- Matrix(0, nrow = N_A, ncol = N_B, sparse = TRUE)
 
 for (j in 1:N_A) {
-  n_links <- sample(1:3, 1)  # Random number of links (1-3)
-  linked_units <- sample(N_B, n_links, replace = FALSE)
+  n_links <- sample(1:3, 1)
+  linked_units <- sample(N_B, n_links)
   Theta_AB[j, linked_units] <- 1
 }
+# Print dimensions of Theta_AB
+cat("Dimensions of Theta_AB:", dim(Theta_AB), "\n")
+
+# Count number of cells with value 0
+num_zeros <- sum(Theta_AB == 0)
+cat("Number of 0 cells:", num_zeros, "\n")
 
 # Ensure every unit in U_B is linked to at least one unit in U_A
 for (i in 1:N_B) {
+  # If col sum is empty, i is not linked to any j. In this case
+  # randomly select j and set (i,j) to one
   if (sum(Theta_AB[, i]) == 0) {
     j <- sample(N_A, 1)
     Theta_AB[j, i] <- 1
   }
 }
 
-cat("Step 1: Created link matrix Theta_AB\n")
+# Count number of cells with value 0
+num_zeros <- sum(Theta_AB == 0)
+cat("Number of 0 cells:", num_zeros, "\n")
+
 cat("Total links:", sum(Theta_AB > 0), "\n")
 cat("All units in U_B linked:", all(colSums(Theta_AB) > 0), "\n\n")
 
 # Step 2: Create standardized link matrix Theta_AB_tilde
 # Following equation in paper: Theta_AB_tilde[j,i] = Theta_AB[j,i] / theta_i^+
-theta_i_plus <- colSums(Theta_AB)  # Column sums
+theta_i_plus <- colSums(Theta_AB)
 Theta_AB_tilde <- Theta_AB
 for (i in 1:N_B) {
   if (theta_i_plus[i] > 0) {
-    Theta_AB_tilde[, i] <- Theta_AB[, i] / theta_i_plus[i]
+    Theta_AB_tilde[, i] <- Theta_AB_tilde[, i] / theta_i_plus[i]
   }
 }
 
@@ -60,9 +83,15 @@ cat("Result 1 verification: all(Theta_AB_tilde' * 1_A = 1_B):",
     all(abs(result1_check - ones_B) < 1e-10), "\n\n")
 
 # Step 3: Create variable of interest Y for target population U_B
-set.seed(42)
-Y_B <- pmax(rnorm(N_B, mean = 50, sd = 15), 0)  # Ensure non-negative
+p_y1 <- 0.95
+# Generate binary vector: 1 with probability p, 0 otherwise
+Y_B <- rbinom(N_B, size = 1, prob = p_y1)
+# Check proportion of ones
+prop_one <- mean(Y_B == 1)
+cat("Proportion of ones:", prop_one, "\n")
+# Sum (true total)
 true_total_Y_B <- sum(Y_B)
+cat("True total Y_B:", true_total_Y_B, "\n")
 
 cat("Step 3: Created variable of interest Y_B\n")
 cat("True total Y_B =", round(true_total_Y_B, 2), "\n")
@@ -77,87 +106,75 @@ cat("Inclusion probability π_j =", round(pi_A[1], 3), "\n\n")
 # Step 5: GWSM Estimation Function
 gwsm_estimator <- function(sample_A, Theta_AB_tilde, pi_A, Y_B) {
   N_A <- nrow(Theta_AB_tilde)
-  N_B <- ncol(Theta_AB_tilde)
-  
-  # Create indicator vector t_A
-  t_A <- rep(0, N_A)
-  t_A[sample_A] <- 1
-  
-  # Calculate weights: W[i] = sum over j of (Theta_AB_tilde[j,i] * t_A[j] / pi_A[j])
-  W <- rep(0, N_B)
-  for (i in 1:N_B) {
-    for (j in 1:N_A) {
-      W[i] <- W[i] + Theta_AB_tilde[j, i] * t_A[j] / pi_A[j]
-    }
-  }
-  
-  # Calculate estimate: Y_B_hat = W' * Y_B
+  t_A <- sparseVector(i = sample_A, x = 1, length = N_A)
+  weight_vec <- t_A / pi_A
+  W <- as.numeric(crossprod(Theta_AB_tilde, weight_vec))
   Y_B_hat <- sum(W * Y_B)
-  
   return(Y_B_hat)
 }
 
 # Step 6: Run simulation
+# Initialize storage vectors
+simulations <- seq(10, n_simulations, by = 10)
+mean_estimates <- numeric(length(simulations))
+
+# Run simulation and store running means
 cat("Step 6: Running simulation...\n")
 estimates <- numeric(n_simulations)
+sampled_A_size <- numeric(n_simulations)
+sampled_B_size <- numeric(n_simulations)
 
 for (sim in 1:n_simulations) {
   if (sim %% 100 == 0) cat("Progress:", sim, "\n")
-  
   # Draw sample from U_A using SRSWOR
   sample_A <- sample(N_A, n_A, replace = FALSE)
+  sampled_A_size[sim] <- length(sample_A)
+  
+  linked_B <- which(colSums(Theta_AB[sample_A, , drop = FALSE]) > 0)
+  sampled_B_size[sim] <- length(linked_B)
   
   # Calculate GWSM estimate
   estimates[sim] <- gwsm_estimator(sample_A, Theta_AB_tilde, pi_A, Y_B)
+  # Store running mean every 10th simulation
+  if (sim %% 10 == 0) {
+    mean_estimates[sim/10] <- mean(estimates[1:sim])
+  }
 }
+
+# Plot results
+data_plot <- data.frame(
+  Simulation = simulations,
+  Mean_Estimate = mean_estimates
+)
+
+ggplot(data_plot, aes(x = Simulation, y = Mean_Estimate)) +
+  geom_line(color = "blue", linetype = "dashed", size = 1) +
+  geom_hline(yintercept = true_total_Y_B, color = "green", linetype = "solid", size = 1) +
+  labs(title = "Mean Estimate of Y_B over Simulations",
+       x = "Simulation Number",
+       y = "Mean Estimate of Y_B") +
+  theme_minimal() +
+  theme(text = element_text(size = 14))
 
 # Step 7: Analyze results
 cat("\nRESULTS - GWSM Unbiasedness Verification\n")
-cat("==========================================\n")
+cat("Empirical ==========================================\n")
 
 mean_estimate <- mean(estimates)
 std_estimate <- sd(estimates)
+var_estimate <- var(estimates)
 bias <- mean_estimate - true_total_Y_B
-relative_bias <- bias / true_total_Y_B * 100
 
 cat("True total Y_B:          ", round(true_total_Y_B, 2), "\n")
 cat("Mean of estimates:       ", round(mean_estimate, 2), "\n")
+cat("Var of estimates:       ", round(var_estimate, 2), "\n")
 cat("Standard deviation:      ", round(std_estimate, 2), "\n")
 cat("Bias:                    ", round(bias, 2), "\n")
-cat("Relative bias:           ", round(relative_bias, 4), "%\n")
+cat("Average sample size of A: ", mean(sampled_A_size))
+cat("Average sample size of B: ", mean(sampled_B_size))
 
-# 95% confidence interval for the mean
-ci_margin <- 1.96 * std_estimate / sqrt(n_simulations)
-cat("95% CI for mean:         [", round(mean_estimate - ci_margin, 2), 
-    ", ", round(mean_estimate + ci_margin, 2), "]\n")
-
-# Statistical test for unbiasedness
-t_test <- t.test(estimates, mu = true_total_Y_B)
-cat("\nStatistical test for unbiasedness (H0: E[Ŷ_B] = Y_B):\n")
-cat("t-statistic:             ", round(t_test$statistic, 4), "\n")
-cat("p-value:                 ", round(t_test$p.value, 6), "\n")
-cat("Reject H0 at α=0.05:     ", t_test$p.value < 0.05, "\n")
-
-if (abs(relative_bias) < 0.5) {
-  cat("\n✓ CONCLUSION: The GWSM estimator is UNBIASED\n")
-  cat("  (Relative bias < 0.5%:", round(abs(relative_bias), 4), "%)\n")
-} else {
-  cat("\n✗ WARNING: Possible bias detected (Relative bias:", 
-      round(relative_bias, 4), "%)\n")
-}
-
-cat("\nThis simulation demonstrates Property 3.1 from Deville & Lavallée (2006):\n")
-cat("'The GWSM provides unbiased estimates if and only if Θ̃_AB is a standardized link matrix.'\n")
-
-# Display some diagnostic information
-cat("\nDiagnostic Information:\n")
-cat("Range of estimates: [", round(min(estimates), 2), ", ", 
-    round(max(estimates), 2), "]\n")
-cat("Coefficient of variation:", round(std_estimate/mean_estimate * 100, 2), "%\n")
-
-# Theoretical verification that E[W] = 1_B
+cat("Theoretical ========================================\n")
 cat("\nTheoretical verification:\n")
 cat("According to equation (3.1): E[W] = Θ̃_AB' * 1_A\n")
 theoretical_E_W <- t(Theta_AB_tilde) %*% ones_A
 cat("E[W] equals 1_B:", all(abs(theoretical_E_W - ones_B) < 1e-10), "\n")
-cat("This confirms unbiasedness: E[Ŷ_B] = E[W' * Y_B] = 1_B' * Y_B = Y_B\n")
