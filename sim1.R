@@ -4,6 +4,7 @@
 # Simple random sampling
 # Population v+m
 # ------------------------------------------------------------------------------
+set.seed(seed)
 
 # GWSM Estimation Function
 gwsm_estimator <- function(sample_A, Theta_AB_tilde, pi_A, Y_B) {
@@ -49,7 +50,7 @@ data_plot <- data.frame(
   Mean_Estimate = mean_estimates
 )
 
-plt <- ggplot(data_plot, aes(x = Simulation, y = Mean_Estimate)) +
+plt1 <- ggplot(data_plot, aes(x = Simulation, y = Mean_Estimate)) +
   geom_line(color = "blue", linetype = "dashed", size = 1) +
   geom_hline(yintercept = true_total_Y_B, color = "green", linetype = "solid", size = 1) +
   labs(title = "Sim 1: Population v+m | Mean Estimate of Y_B over Simulations",
@@ -58,7 +59,7 @@ plt <- ggplot(data_plot, aes(x = Simulation, y = Mean_Estimate)) +
   theme_minimal() +
   theme(text = element_text(size = 14))
 
-print(plt)
+print(plt1)
 ggsave(file.path("output", "plt1.png")) 
 
 # Analyze results

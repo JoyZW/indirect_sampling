@@ -1,12 +1,17 @@
 #-------------------------------------------------------------------------------
 # TODO:
 # - allow for. minor, moderate and severe differences between empirical v+m and population v+m
+# - use sample vcm
+# - find out what is causing this to run for forever
 # - switch from simple random sampling to Poisson sampling
 # - implement and assess different scenarios based on section 6 
 # (optimal standardized link matrices depends on sampling)
 # - make sample sizes consistent with actual data
 # - make vcm and vplusm sample values consistent with actual data
 # - equation 2 of Prof Li-Chun's note / uncalibrated GWSM estimator using v+m to assess bias
+
+# TODO 2 (questions)
+# - why aren't the values in mean_estimates and mean_estimates_pop the same???
 
 # ------------------------------------------------------------------------------
 
@@ -24,7 +29,8 @@ rm(list = ls())
 setwd(dirname(rstudioapi::getActiveDocumentContext()$path))
 
 # Load required libraries
-set.seed(2025)
+seed <- 2025
+set.seed(seed)
 library(Matrix)
 library(ggplot2)
 
@@ -50,6 +56,7 @@ for (j in 1:N_A) {
   linked_units <- sample(N_B, n_links)
   Theta_AB[j, linked_units] <- 1
 }
+
 # Print dimensions of Theta_AB
 cat("Dimensions of Theta_AB:", dim(Theta_AB), "\n")
 
@@ -123,3 +130,9 @@ source("sim1.R")
 
 # ------------------------------------------------------------------------ Sim 2
 source("sim2.R")
+
+data.frame(
+  pop.sum.y = true_total_Y_B,
+  theta.pop = mean(mean_estimates_pop),
+  theta.sample = mean(mean_estimates_sample) # This makes sense
+)
